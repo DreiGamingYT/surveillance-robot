@@ -1,0 +1,10 @@
+# Node
+node_modules/
+# Flutter
+app/protego_pi/.dart_tool/
+app/protego_pi/build/
+app/protego_pi/.android/
+.idea/
+*.iml
+# OS
+.DS_Store
