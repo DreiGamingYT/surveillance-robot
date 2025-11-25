@@ -1,4 +1,4 @@
--- api/schema.sql
+-- api/schema.sql dfdf
 CREATE TABLE IF NOT EXISTS users (
   id INT PRIMARY KEY AUTO_INCREMENT,
   email VARCHAR(255) UNIQUE,
