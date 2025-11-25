@@ -19,6 +19,6 @@
     "helmet": "^7.0.0"
   },
   "devDependencies": {
-    "prisma": "^7.0.0"
+    "prisma": "^6.19.0"
   }
 }
