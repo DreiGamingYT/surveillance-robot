@@ -2,8 +2,6 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
 const app = express();
 
 app.use(helmet());
@@ -17,4 +15,5 @@ app.post('/auth/login', async (req, res) => {
   res.json({ token: 'jwt-token' });
 });
 
-app.listen(process.env.PORT || 3000, ()=> console.log('API up'));
+const port = process.env.PORT || 3000;
+app.listen(port, ()=> console.log(`API listening on ${port}`));
