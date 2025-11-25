@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const pool = require('./db');
+const { run, all } = require('./db');
 
 const app = express();
 app.use(helmet());
@@ -17,11 +17,8 @@ app.get('/', (req, res) => res.json({ ok: true }));
 app.post('/telemetry', async (req, res) => {
   try {
     const { robotId, payload } = req.body;
-    const [result] = await pool.query(
-      'INSERT INTO telemetry (robotId, payload) VALUES (?, ?)',
-      [robotId, JSON.stringify(payload)]
-    );
-    return res.json({ id: result.insertId });
+    const info = run('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [robotId, JSON.stringify(payload)]);
+    return res.json({ id: info.lastInsertRowid });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'db error' });
@@ -32,15 +29,25 @@ app.post('/telemetry', async (req, res) => {
 app.post('/control', async (req, res) => {
   try {
     const { robotId, command } = req.body;
-    const [result] = await pool.query(
-      'INSERT INTO commands (robotId, command) VALUES (?, ?)',
-      [robotId, JSON.stringify(command)]
-    );
-    return res.json({ id: result.insertId });
+    const info = run('INSERT INTO commands (robotId, command) VALUES (?, ?)', [robotId, JSON.stringify(command)]);
+    return res.json({ id: info.lastInsertRowid });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'db error' });
   }
+});
+
+app.get('/commands', (req, res) => {
+  const { robotId } = req.query;
+  const rows = all('SELECT id, robotId, command, processed, created_at FROM commands WHERE robotId = ? AND processed = 0 ORDER BY id ASC LIMIT 10', [robotId || '']);
+  return res.json(rows);
+});
+
+// to mark processed endpoint:
+app.post('/commands/:id/processed', (req, res) => {
+  const id = req.params.id;
+  run('UPDATE commands SET processed = 1 WHERE id = ?', [id]);
+  res.json({ ok: true });
 });
 
 const port = process.env.PORT || 3000;
