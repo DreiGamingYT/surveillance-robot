@@ -12,10 +12,12 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "express": "^5.1.0",
+    "@prisma/client": "^7.0.0",
     "cors": "^2.8.5",
-    "helmet": "^7.0.0",
-    "prisma": "^5.1.0",
-    "@prisma/client": "^7.0.0"
+    "express": "^5.1.0",
+    "helmet": "^7.0.0"
+  },
+  "devDependencies": {
+    "prisma": "^7.0.0"
   }
 }
