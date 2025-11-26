@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../../config.dart';
 
 class ControlPanel extends StatelessWidget {
-  const ControlPanel({Key? key}) : super(key: key);
+  ControlPanel({super.key});
   final String apiBase = Config.apiBase;
 
   Future<void> send(String action, double speed) async {
