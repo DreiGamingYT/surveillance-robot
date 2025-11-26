@@ -1,56 +1,22 @@
-// api/db.js  (SQLite version using better-sqlite3)
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+// api/db.js
+require('dotenv').config();
+const mysql = require('mysql2/promise');
 
-const dbPath = path.join(__dirname, 'data.sqlite');
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'surveilled',
+  waitForConnections: true,
+  connectionLimit: Number(process.env.DB_CONN_LIMIT || 10),
+  queueLimit: 0,
+  dateStrings: true,
+});
 
-// ensure file exists
-if (!fs.existsSync(dbPath)) {
-  fs.writeFileSync(dbPath, '');
+async function query(sql, params = []) {
+  const [rows] = await pool.execute(sql, params);
+  return rows;
 }
 
-const db = new Database(dbPath);
-
-// Simple helper to run a statement and return lastInsertRowid
-function run(sql, params = []) {
-  const stmt = db.prepare(sql);
-  const info = stmt.run(...params);
-  return info;
-}
-
-function all(sql, params = []) {
-  const stmt = db.prepare(sql);
-  return stmt.all(...params);
-}
-
-function get(sql, params = []) {
-  const stmt = db.prepare(sql);
-  return stmt.get(...params);
-}
-
-// Ensure tables exist (run once at startup)
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTO_INCREMENT,
-  email VARCHAR(255) UNIQUE,
-  password VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS telemetry (
-  id INTEGER PRIMARY KEY AUTO_INCREMENT,
-  robotId VARCHAR(100),
-  payload JSON,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS commands (
-  id INTEGER PRIMARY KEY AUTO_INCREMENT,
-  robotId VARCHAR(100),
-  command JSON,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-`);
-
-module.exports = { db, run, all, get };
+module.exports = { pool, query };

@@ -1,4 +1,4 @@
--- api/schema.sql dfdf
+-- api/schema.sql (MySQL)
 CREATE TABLE IF NOT EXISTS users (
   id INT PRIMARY KEY AUTO_INCREMENT,
   email VARCHAR(255) UNIQUE,
@@ -17,5 +17,6 @@ CREATE TABLE IF NOT EXISTS commands (
   id INT PRIMARY KEY AUTO_INCREMENT,
   robotId VARCHAR(100),
   command JSON,
+  processed TINYINT(1) DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
