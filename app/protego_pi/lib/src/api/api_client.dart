@@ -1,17 +1,21 @@
-// app/protego_pi/lib/src/api/api_client.dart
+// lib/src/api/api_client.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../config.dart';
 
 class ApiClient {
   final String baseUrl;
-  ApiClient(this.baseUrl);
+  ApiClient({String? base}) : baseUrl = base ?? Config.apiBase;
 
-  Future<Map?> postTelemetry(String robotId, Map payload) async {
-    final res = await http.post(Uri.parse('$baseUrl/telemetry'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'robotId': robotId, 'payload': payload}),
-    );
-    if (res.statusCode == 200) return jsonDecode(res.body);
-    return null;
+  Uri _uri(String path) => Uri.parse('$baseUrl$path');
+
+  Future<http.Response> post(String path, Object body, {Map<String,String>? headers}) {
+    final hdrs = {'Content-Type': 'application/json', ...?headers};
+    return http.post(_uri(path), headers: hdrs, body: jsonEncode(body));
+  }
+
+  Future<http.Response> get(String path, {Map<String,String>? headers, Map<String,String>? params}) {
+    final uri = params == null ? _uri(path) : Uri.parse('$baseUrl$path').replace(queryParameters: params);
+    return http.get(uri, headers: headers);
   }
 }
