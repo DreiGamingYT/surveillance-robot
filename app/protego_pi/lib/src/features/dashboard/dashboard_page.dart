@@ -1,7 +1,7 @@
 // lib/src/features/dashboard/dashboard_page.dart
 import 'package:flutter/material.dart';
 import 'control_panel.dart';
-import 'live_view.dart';
+import '../live_view/live_view_widget.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/telemetry_provider.dart';
 
