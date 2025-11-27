@@ -31,6 +31,29 @@ io.on('connection', (socket) => {
   });
 });
 
+io.on('connection', (socket) => {
+  console.log('socket connected:', socket.id);
+
+  socket.on('telemetry_from_pi', async (data) => {
+    try {
+      const { robotId, payload } = data;
+      const [result] = await pool.execute('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [
+        robotId,
+        JSON.stringify(payload),
+      ]);
+      const insertId = result.insertId;
+      const event = { id: insertId, robotId, payload, created_at: new Date().toISOString() };
+      io.emit('telemetry', event);
+    } catch (err) {
+      console.error('socket telemetry error', err);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('socket disconnected:', socket.id);
+  });
+});
+
 // Helper - use pool.execute for inserts and get insertId
 async function insertTelemetry(robotId, payload) {
   const [result] = await pool.execute('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [
