@@ -140,14 +140,14 @@ app.post('/telemetry', async (req, res) => {
     const { robotId, payload } = req.body;
     if (!robotId || !payload) return res.status(400).json({ error: 'robotId and payload required' });
 
-    const [result] = await pool.execute('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [robotId, JSON.stringify(payload)]);
-    const insertId = result.insertId;
-    const event = { id: insertId, robotId, payload, created_at: new Date().toISOString() };
+    // --- DO NOT save to DB: only broadcast ---
+    const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
     io.emit('telemetry', event);
-    return res.json({ id: insertId });
+
+    return res.json({ ok: true, emitted: true });
   } catch (err) {
     console.error('telemetry error', err);
-    return res.status(500).json({ error: 'db error' });
+    return res.status(500).json({ error: 'server error' });
   }
 });
 
