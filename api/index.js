@@ -29,17 +29,15 @@ const io = new Server(server, {
 io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
 
-  // receive telemetry emitted by Pi clients
-  socket.on('telemetry_from_pi', async (data) => {
+  // Accept telemetry emitted by Pi, but DO NOT persist to DB.
+  socket.on('telemetry_from_pi', (data) => {
     try {
-      const { robotId, payload } = data;
+      const { robotId, payload } = data || {};
       if (!robotId || !payload) return;
-      const [result] = await pool.execute('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [robotId, JSON.stringify(payload)]);
-      const insertId = result.insertId;
-      const event = { id: insertId, robotId, payload, created_at: new Date().toISOString() };
+      const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
       io.emit('telemetry', event);
     } catch (err) {
-      console.error('socket telemetry error', err);
+      console.error('socket telemetry_from_pi error', err);
     }
   });
 
@@ -140,7 +138,7 @@ app.post('/telemetry', async (req, res) => {
     const { robotId, payload } = req.body;
     if (!robotId || !payload) return res.status(400).json({ error: 'robotId and payload required' });
 
-    // --- DO NOT save to DB: only broadcast ---
+    // Emit-only: do NOT persist.
     const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
     io.emit('telemetry', event);
 
