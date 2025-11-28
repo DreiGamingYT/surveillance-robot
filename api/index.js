@@ -8,7 +8,7 @@ const axios = require('axios');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-const { pool } = require('./db'); // must export pool in api/db.js
+const { pool } = require('./db'); // keep pool for users/commands operations
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -23,7 +23,8 @@ const server = http.createServer(app);
 const { Server } = require('socket.io');
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET','POST'] },
-  transports: ['polling', 'websocket']
+  // allow polling + websocket for best compatibility
+  transports: ['polling', 'websocket'],
 });
 
 io.on('connection', (socket) => {
@@ -44,16 +45,16 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('socket disconnected', socket.id));
 });
 
-// Utility functions
+// helper token signer
 function signToken(user) {
   return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-// Basic health
+// health
 app.get('/', (req, res) => res.json({ ok: true }));
 
 /**
- * AUTH: register / login / google
+ * AUTH
  */
 app.post('/auth/register', async (req, res) => {
   try {
@@ -131,7 +132,7 @@ app.post('/auth/google', async (req, res) => {
 });
 
 /**
- * TELEMETRY & CONTROL
+ * TELEMETRY - EMIT-ONLY (DO NOT WRITE TO DB)
  */
 app.post('/telemetry', async (req, res) => {
   try {
@@ -149,6 +150,9 @@ app.post('/telemetry', async (req, res) => {
   }
 });
 
+/**
+ * CONTROL - keep saving commands (optional)
+ */
 app.post('/control', async (req, res) => {
   try {
     const { robotId, command } = req.body;
