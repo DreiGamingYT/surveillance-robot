@@ -31,16 +31,39 @@ io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
 
   // Accept telemetry emitted by Pi, but DO NOT persist to DB.
-  socket.on('telemetry_from_pi', (data) => {
-    try {
-      const { robotId, payload } = data || {};
-      if (!robotId || !payload) return;
-      const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
-      io.emit('telemetry', event);
-    } catch (err) {
-      console.error('socket telemetry_from_pi error', err);
+  // inside io.on('connection', (socket) => { ... })
+socket.on('telemetry_from_pi', async (data) => {
+  try {
+    // basic validation
+    const { robotId, payload } = data || {};
+    if (!robotId || !payload) {
+      console.warn('telemetry_from_pi missing robotId or payload', data);
+      return;
     }
-  });
+
+    // persist to MySQL
+    const [result] = await pool.execute(
+      'INSERT INTO telemetry (robotId, payload) VALUES (?, ?)',
+      [robotId, JSON.stringify(payload)]
+    );
+    const insertId = result.insertId;
+
+    // build event and broadcast to connected clients (UI)
+    const event = {
+      id: insertId,
+      robotId,
+      payload,
+      created_at: new Date().toISOString()
+    };
+    io.emit('telemetry', event); // all connected UI clients receive 'telemetry'
+
+    // optionally ack to the sender
+    socket.emit('telemetry_ack', { id: insertId, ok: true });
+  } catch (err) {
+    console.error('socket telemetry error', err);
+    socket.emit('telemetry_ack', { ok: false, error: (err && err.message) || 'unknown' });
+  }
+});
 
   socket.on('disconnect', () => console.log('socket disconnected', socket.id));
 });
