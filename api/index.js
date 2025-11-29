@@ -8,7 +8,7 @@ const axios = require('axios');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-const { pool } = require('./db');
+const { pool } = require('./db'); // ensure api/db.js exports `pool`
 
 const path = require('path');
 const fs = require('fs');
@@ -20,6 +20,8 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const app = express();
 app.use(helmet());
 app.use(cors());
+
+// IMPORTANT: parse JSON BEFORE routes that read req.body
 app.use(express.json());
 
 // ensure static dir exists
@@ -33,66 +35,82 @@ app.use('/static', express.static(STATIC_DIR));
 const server = http.createServer(app);
 const { Server } = require('socket.io');
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST'] },
-  // allow polling + websocket for best compatibility
+  cors: { origin: '*', methods: ['GET', 'POST'] },
   transports: ['polling', 'websocket'],
 });
 
+/**
+ * Socket.IO connection handler
+ * - accepts telemetry_from_pi events (persist + broadcast)
+ */
 io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
 
-  // Accept telemetry emitted by Pi, but DO NOT persist to DB.
-  // inside io.on('connection', (socket) => { ... })
-socket.on('telemetry_from_pi', async (data) => {
-  try {
-    // basic validation
-    const { robotId, payload } = data || {};
-    if (!robotId || !payload) {
-      console.warn('telemetry_from_pi missing robotId or payload', data);
-      return;
+  // handle telemetry emitted by Pi over socket.io
+  socket.on('telemetry_from_pi', async (data) => {
+    try {
+      // defensive validation
+      if (!data || typeof data !== 'object') {
+        console.warn('telemetry_from_pi: no data or invalid format', data);
+        socket.emit('telemetry_ack', { ok: false, error: 'invalid payload' });
+        return;
+      }
+
+      const { robotId, payload } = data;
+      if (!robotId || !payload) {
+        console.warn('telemetry_from_pi missing robotId or payload', data);
+        socket.emit('telemetry_ack', { ok: false, error: 'robotId and payload required' });
+        return;
+      }
+
+      // persist to MySQL
+      const [result] = await pool.execute(
+        'INSERT INTO telemetry (robotId, payload) VALUES (?, ?)',
+        [robotId, JSON.stringify(payload)]
+      );
+      const insertId = result.insertId;
+
+      // build event and broadcast to connected UI clients
+      const event = {
+        id: insertId,
+        robotId,
+        payload,
+        created_at: new Date().toISOString()
+      };
+      io.emit('telemetry', event); // broadcast to all connected clients
+
+      // ack sender with id
+      socket.emit('telemetry_ack', { id: insertId, ok: true });
+      console.log(`telemetry_from_pi persisted id=${insertId} robotId=${robotId}`);
+    } catch (err) {
+      console.error('socket telemetry error', err);
+      socket.emit('telemetry_ack', { ok: false, error: (err && err.message) || 'unknown' });
     }
+  });
 
-    // persist to MySQL
-    const [result] = await pool.execute(
-      'INSERT INTO telemetry (robotId, payload) VALUES (?, ?)',
-      [robotId, JSON.stringify(payload)]
-    );
-    const insertId = result.insertId;
-
-    // build event and broadcast to connected clients (UI)
-    const event = {
-      id: insertId,
-      robotId,
-      payload,
-      created_at: new Date().toISOString()
-    };
-    io.emit('telemetry', event); // all connected UI clients receive 'telemetry'
-
-    // optionally ack to the sender
-    socket.emit('telemetry_ack', { id: insertId, ok: true });
-  } catch (err) {
-    console.error('socket telemetry error', err);
-    socket.emit('telemetry_ack', { ok: false, error: (err && err.message) || 'unknown' });
-  }
+  socket.on('disconnect', () => {
+    console.log('socket disconnected', socket.id);
+  });
 });
 
-  socket.on('disconnect', () => console.log('socket disconnected', socket.id));
-});
-
-// helper token signer
+/**
+ * helper token signer
+ */
 function signToken(user) {
   return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-// health
+/**
+ * Basic health
+ */
 app.get('/', (req, res) => res.json({ ok: true }));
 
 /**
- * AUTH
+ * AUTH endpoints
  */
 app.post('/auth/register', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: 'email & password required' });
 
     const [exists] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
@@ -111,7 +129,7 @@ app.post('/auth/register', async (req, res) => {
 
 app.post('/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: 'email & password required' });
 
     const [rows] = await pool.execute('SELECT id, email, password FROM users WHERE email = ?', [email]);
@@ -131,7 +149,7 @@ app.post('/auth/login', async (req, res) => {
 
 app.post('/auth/google', async (req, res) => {
   try {
-    const { idToken } = req.body;
+    const { idToken } = req.body || {};
     if (!idToken) return res.status(400).json({ error: 'idToken required' });
 
     const tokenInfoUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`;
@@ -167,13 +185,23 @@ app.post('/auth/google', async (req, res) => {
 
 /**
  * TELEMETRY - EMIT-ONLY (DO NOT WRITE TO DB)
+ * This endpoint is defensive: if body is missing or malformed it returns 400 instead of crashing.
  */
 app.post('/telemetry', async (req, res) => {
   try {
-    const { robotId, payload } = req.body;
-    if (!robotId || !payload) return res.status(400).json({ error: 'robotId and payload required' });
+    const body = req.body || {};
+    if (!Object.keys(body).length) {
+      console.warn('POST /telemetry - empty body or body not parsed. headers=', req.headers);
+      return res.status(400).json({ error: 'empty or invalid JSON body' });
+    }
 
-    // Emit-only: do NOT persist.
+    const { robotId, payload } = body;
+    if (!robotId || !payload) {
+      console.warn('POST /telemetry - missing fields', { robotId, payload });
+      return res.status(400).json({ error: 'robotId and payload required' });
+    }
+
+    // Emit-only: do NOT persist to DB here.
     const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
     io.emit('telemetry', event);
 
@@ -185,11 +213,11 @@ app.post('/telemetry', async (req, res) => {
 });
 
 /**
- * CONTROL - keep saving commands (optional)
+ * CONTROL - save commands
  */
 app.post('/control', async (req, res) => {
   try {
-    const { robotId, command } = req.body;
+    const { robotId, command } = req.body || {};
     if (!robotId || !command) return res.status(400).json({ error: 'robotId and command required' });
 
     const [result] = await pool.execute('INSERT INTO commands (robotId, command) VALUES (?, ?)', [robotId, JSON.stringify(command)]);
@@ -204,7 +232,7 @@ app.post('/control', async (req, res) => {
 
 app.get('/commands', async (req, res) => {
   try {
-    const { robotId } = req.query;
+    const { robotId } = req.query || {};
     if (!robotId) return res.status(400).json({ error: 'robotId required' });
     const [rows] = await pool.execute('SELECT id, robotId, command, processed, created_at FROM commands WHERE robotId = ? AND processed = 0 ORDER BY id ASC LIMIT 50', [robotId]);
     const parsed = rows.map(r => ({ ...r, command: r.command ? JSON.parse(r.command) : null }));
