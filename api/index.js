@@ -8,7 +8,11 @@ const axios = require('axios');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
-const { pool } = require('./db'); // keep pool for users/commands operations
+const { pool } = require('./db');
+
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -17,6 +21,13 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+
+// ensure static dir exists
+const STATIC_DIR = path.join(__dirname, 'static');
+if (!fs.existsSync(STATIC_DIR)) fs.mkdirSync(STATIC_DIR);
+
+// serve static files at /static
+app.use('/static', express.static(STATIC_DIR));
 
 // create server + socket.io
 const server = http.createServer(app);
@@ -212,6 +223,34 @@ app.post('/commands/:id/processed', async (req, res) => {
   } catch (err) {
     console.error('mark processed error', err);
     return res.status(500).json({ error: 'db error' });
+  }
+});
+
+// multer storage - save always as map.png
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, STATIC_DIR);
+  },
+  filename: function (req, file, cb) {
+    cb(null, 'map.png'); // always overwrite
+  }
+});
+const upload = multer({ storage: storage });
+
+/**
+ * POST /upload_map
+ * multipart/form-data with file field named 'map'
+ * Saves as api/static/map.png (overwrites)
+ */
+app.post('/upload_map', upload.single('map'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'no file' });
+    // return a public URL to access
+    const publicUrl = `${req.protocol}://${req.get('host')}/static/map.png`;
+    return res.json({ ok: true, url: publicUrl });
+  } catch (err) {
+    console.error('upload_map error', err);
+    return res.status(500).json({ error: 'server error' });
   }
 });
 
