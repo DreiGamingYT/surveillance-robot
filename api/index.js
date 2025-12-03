@@ -129,28 +129,30 @@ io.on('connection', (socket) => {
     });
 
     socket.on('detection', async (data) => {
-        try {
-            if (!data || !data.robotId || !data.payload) {
-                console.warn('invalid detection', data);
-                return;
-            }
+  try {
 
-            try {
-                await pool.execute('INSERT INTO detections (robotId, payload) VALUES (?, ?)', [data.robotId, JSON.stringify(data.payload)]);
-            } catch (e) {
-                console.warn('failed to persist detection', e.message || e);
-            }
+    if (!data || !data.robotId || !data.payload) {
+      console.warn('invalid detection received', data);
+      return;
+    }
 
-            io.emit('detection', {
-                id: null,
-                robotId: data.robotId,
-                payload: data.payload,
-                created_at: new Date().toISOString()
-            });
-        } catch (e) {
-            console.error('detection handler error', e);
-        }
+    try {
+      await pool.execute('INSERT INTO detections (robotId, payload) VALUES (?, ?)', [data.robotId, JSON.stringify(data.payload)]);
+    } catch (e) {
+      console.warn('failed to persist detection', e && e.message ? e.message : e);
+    }
+
+    io.emit('detection', {
+      id: null,
+      robotId: data.robotId,
+      payload: data.payload,
+      created_at: new Date().toISOString()
     });
+
+    console.log('detection forwarded from', data.robotId);
+  } catch (err) {
+    console.error('detection handler error', err);
+  }
 });
 
 function signToken(user) {
