@@ -332,28 +332,52 @@ app.post('/auth/google', async (req, res) => {
   }
 });
 
+// REPLACE your existing /telemetry handler with this:
 app.post('/telemetry', async (req, res) => {
-  const limit = parseInt(req.query.limit) || 100;
-  const [rows] = await pool.execute('SELECT id, robotId, payload, created_at FROM telemetry ORDER BY id DESC LIMIT ?', [limit]);
-const data = rows.map(r => ({ ...r, payload: JSON.parse(r.payload) }));
-  res.json(data);
-
   try {
+    // log incoming for debugging (remove or lower later)
+    console.log('POST /telemetry headers=', JSON.stringify(req.headers));
+    console.log('POST /telemetry raw body=', JSON.stringify(req.body));
+
     const body = req.body || {};
-    if (!Object.keys(body).length) {
-      console.warn('POST /telemetry - empty body or body not parsed. headers=', req.headers);
-      return res.status(400).json({ error: 'empty or invalid JSON body' });
+    // Accept both top-level payload or { payload: {...} } shapes
+    const robotId = body.robotId || body.robotid || body.id || (body.payload && body.payload.robotId) || null;
+    const payload = body.payload || body.data || (body.robotId ? (Object.assign({}, body)) : null);
+
+    if (!robotId || !payload) {
+      console.warn('POST /telemetry - missing robotId or payload', { robotId, hasPayload: !!payload });
+      return res.status(400).json({ error: 'robotId and payload required' });
     }
 
-    const robotId = body.robotId || body.robotid || null;
-    const payload = body.payload || body.data || null;
-    if (!robotId || !payload) return res.status(400).json({ error: 'robotId and payload required' });
+    // Build event to emit to UI clients
+    const event = { id: null, robotId: robotId, payload: payload, created_at: new Date().toISOString() };
 
-    const event = { id: null, robotId, payload, created_at: new Date().toISOString() };
+    // Broadcast immediately
     io.emit('telemetry', event);
-    return res.json({ ok: true, emitted: true });
+
+    // Attempt to persist to DB if pool exists
+    if (typeof pool !== 'undefined' && pool) {
+      try {
+        const [result] = await pool.execute('INSERT INTO telemetry (robotId, payload) VALUES (?, ?)', [robotId, JSON.stringify(payload)]);
+        const insertId = result.insertId || null;
+        // re-emit with id if persisted
+        const persistedEvent = { ...event, id: insertId };
+        io.emit('telemetry', persistedEvent);
+        // respond success (persisted)
+        return res.status(201).json({ ok: true, persisted: true, id: insertId });
+      } catch (dbErr) {
+        console.warn('POST /telemetry - db insert failed, emitting only', dbErr && dbErr.message ? dbErr.message : dbErr);
+        // still return success but indicate not persisted
+        return res.status(202).json({ ok: true, persisted: false, note: 'emitted' });
+      }
+    } else {
+      // no DB configured — just emit
+      return res.status(200).json({ ok: true, emitted: true });
+    }
   } catch (err) {
-    console.error('telemetry error', err && err.message ? err.message : err);
+    // log full stack so you can inspect Render / server logs
+    console.error('POST /telemetry unhandled error:', err && err.stack ? err.stack : err);
+    // return minimal info to caller
     return res.status(500).json({ error: 'server error' });
   }
 });
