@@ -8,7 +8,16 @@ const axios = require('axios');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
+const multer = require('multer');
+const recDir = path.join(__dirname, 'static', 'recordings');
+if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
+const uploadRec = multer({ dest: recDir });
+
 const { pool } = require('./db'); // expects a MySQL pool exported from ./db.js
+
+const path = require('path');
+const fs = require('fs');
+const { exec, spawn } = require('child_process');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -62,7 +71,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Telemetry emitted by Pi via socket
   socket.on('telemetry_from_pi', async (data) => {
     try {
       if (!data || typeof data !== 'object') {
@@ -100,7 +108,20 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Detection events from Pi (HuskyLens) - persist and broadcast to UI
+app.post('/detections', async (req, res) => {
+  try {
+    const detection = req.body;
+    if (!detection) return res.status(400).json({ error: 'no body' });
+    // validation optional
+    io.emit('detection', detection); // broadcast to UI clients
+    // optionally persist: INSERT into detections table
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('detections error', e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
   socket.on('detection', async (data) => {
     try {
       if (!data || !data.robotId || !data.payload) {
@@ -145,7 +166,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // When disconnected, remove robot mapping(s) associated with this socket
   socket.on('disconnect', () => {
     for (const [robotId, sid] of robotSockets.entries()) {
       if (sid === socket.id) {
@@ -157,7 +177,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// helper token signer
 function signToken(user) {
   return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 }
@@ -165,9 +184,6 @@ function signToken(user) {
 // health
 app.get('/', (req, res) => res.json({ ok: true }));
 
-/**
- * AUTH
- */
 app.post('/auth/register', async (req, res) => {
   try {
     const body = req.body || {};
@@ -248,10 +264,11 @@ app.post('/auth/google', async (req, res) => {
   }
 });
 
-/**
- * TELEMETRY - EMIT-ONLY (HTTP POST from clients / Pi) - do not persist here
- */
 app.post('/telemetry', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  const data = await db.getLatestTelemetry(limit);
+  res.json(data);
+
   try {
     const body = req.body || {};
     if (!Object.keys(body).length) {
@@ -272,9 +289,6 @@ app.post('/telemetry', async (req, res) => {
   }
 });
 
-/**
- * CONTROL - Save commands and emit
- */
 app.post('/control', async (req, res) => {
   try {
     const body = req.body || {};
@@ -316,12 +330,6 @@ app.post('/commands/:id/processed', async (req, res) => {
   }
 });
 
-/**
- * LIDAR CONTROL endpoint
- * - requires header x-api-key equal to process.env.LIDAR_API_KEY
- * - body: { robotId: 'pi-001', action: 'start'|'stop' }
- * Emits 'lidar_control' event to target robot socket if connected.
- */
 app.post('/lidar/control', (req, res) => {
   try {
     const headersKey = req.headers['x-api-key'] || req.headers['X-API-KEY'] || req.headers['x-api-key'.toLowerCase()];
@@ -346,6 +354,125 @@ app.post('/lidar/control', (req, res) => {
     return res.json({ ok: true, sentTo: robotId });
   } catch (err) {
     console.error('lidar control error', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.post('/record/upload', uploadRec.single('file'), (req, res) => {
+  // file saved to dest with generated name; move/rename if you want
+  if (!req.file) return res.status(400).json({ error: 'no file' });
+  // optionally rename/move
+  res.json({ ok: true, filename: req.file.filename });
+});
+
+// simple purge on server startup (run at process start)
+const PURGE_DAYS = 10;
+function purgeOldRecordings() {
+  const files = fs.readdirSync(recDir);
+  files.forEach(f => {
+    const p = path.join(recDir, f);
+    const stat = fs.statSync(p);
+    const ageDays = (Date.now() - stat.mtimeMs) / (1000*60*60*24);
+    if (ageDays > PURGE_DAYS) fs.unlinkSync(p);
+  });
+}
+purgeOldRecordings();
+
+app.get('/telemetry/recent', async (req, res) => {
+  try {
+    const robotId = req.query.robotId;
+    const limit = parseInt(req.query.limit || '100', 10);
+    if (!robotId) return res.status(400).json({ error: 'robotId required' });
+    const [rows] = await pool.execute('SELECT id, robotId, payload, created_at FROM telemetry WHERE robotId = ? ORDER BY id DESC LIMIT ?', [robotId, limit]);
+    const parsed = rows.map(r => ({ id: r.id, robotId: r.robotId, payload: JSON.parse(r.payload), created_at: r.created_at }));
+    return res.json(parsed);
+  } catch (err) {
+    console.error('telemetry.recent error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+const recDir = path.join(__dirname, 'static', 'recordings');
+if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
+
+// Provide static access to recordings (public read)
+app.use('/static/recordings', express.static(recDir));
+
+// In-memory map for manual recordings started by Pi via socket (Pi will manage actual processes).
+// We only route start/stop requests from UI to Pi through socket.io
+// Endpoint: POST /record/start  body: { robotId, source }
+// Endpoint: POST /record/stop   body: { robotId, id }
+app.post('/record/start', (req, res) => {
+  try {
+    const headersKey = req.headers['x-api-key'] || '';
+    if (LIDAR_API_KEY && headersKey !== LIDAR_API_KEY) return res.status(403).json({ error: 'forbidden' });
+
+    const body = req.body || {};
+    const robotId = body.robotId || body.robotid || null;
+    const source = body.source || null; // e.g. http://localhost:8080/?action=stream
+    if (!robotId) return res.status(400).json({ error: 'robotId required' });
+
+    const socketId = robotSockets.get(robotId);
+    if (!socketId) return res.status(404).json({ error: 'robot not connected' });
+
+    // create unique id for this recording request
+    const recId = `rec_${Date.now()}_${Math.floor(Math.random()*9999)}`;
+    io.to(socketId).emit('record_control', { action: 'start', id: recId, source: source || null });
+    console.log(`record start emitted -> ${robotId} (socket ${socketId}) id=${recId}`);
+    return res.json({ ok: true, id: recId });
+  } catch (err) {
+    console.error('record/start error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+app.post('/record/stop', (req, res) => {
+  try {
+    const headersKey = req.headers['x-api-key'] || '';
+    if (LIDAR_API_KEY && headersKey !== LIDAR_API_KEY) return res.status(403).json({ error: 'forbidden' });
+
+    const body = req.body || {};
+    const robotId = body.robotId || body.robotid || null;
+    const recId = body.id || null;
+    if (!robotId || !recId) return res.status(400).json({ error: 'robotId and id required' });
+
+    const socketId = robotSockets.get(robotId);
+    if (!socketId) return res.status(404).json({ error: 'robot not connected' });
+
+    io.to(socketId).emit('record_control', { action: 'stop', id: recId });
+    console.log(`record stop emitted -> ${robotId} (socket ${socketId}) id=${recId}`);
+    return res.json({ ok: true, id: recId });
+  } catch (err) {
+    console.error('record/stop error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// endpoint for listing recordings stored on server (if Pi uploads to server /record/upload)
+app.get('/recordings', (req, res) => {
+  try {
+    const files = fs.readdirSync(recDir).filter(f => !f.startsWith('.')).map(f => {
+      const stat = fs.statSync(path.join(recDir, f));
+      return { filename: f, url: `${req.protocol}://${req.get('host')}/static/recordings/${f}`, mtime: stat.mtimeMs, size: stat.size };
+    }).sort((a,b) => b.mtime - a.mtime);
+    return res.json(files);
+  } catch (err) {
+    console.error('recordings list error', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// delete a recording by filename
+app.delete('/recordings/:filename', (req, res) => {
+  try {
+    const fname = req.params.filename;
+    if (!fname) return res.status(400).json({ error: 'filename required' });
+    const p = path.join(recDir, fname);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
+    fs.unlinkSync(p);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('recording delete error', err);
     return res.status(500).json({ error: 'server error' });
   }
 });
