@@ -9,15 +9,16 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
 const multer = require('multer');
-const recDir = path.join(__dirname, 'static', 'recordings');
-if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
-const uploadRec = multer({ dest: recDir });
-
-const { pool } = require('./db'); // expects a MySQL pool exported from ./db.js
-
 const path = require('path');
 const fs = require('fs');
 const { exec, spawn } = require('child_process');
+
+const { pool } = require('./db'); // expects a MySQL pool exported from ./db.js
+
+// recordings directory (declare once)
+const recDir = path.join(__dirname, 'static', 'recordings');
+if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
+const uploadRec = multer({ dest: recDir });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -266,7 +267,8 @@ app.post('/auth/google', async (req, res) => {
 
 app.post('/telemetry', async (req, res) => {
   const limit = parseInt(req.query.limit) || 100;
-  const data = await db.getLatestTelemetry(limit);
+  const [rows] = await pool.execute('SELECT id, robotId, payload, created_at FROM telemetry ORDER BY id DESC LIMIT ?', [limit]);
+const data = rows.map(r => ({ ...r, payload: JSON.parse(r.payload) }));
   res.json(data);
 
   try {
@@ -391,9 +393,6 @@ app.get('/telemetry/recent', async (req, res) => {
     return res.status(500).json({ error: 'server error' });
   }
 });
-
-const recDir = path.join(__dirname, 'static', 'recordings');
-if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
 
 // Provide static access to recordings (public read)
 app.use('/static/recordings', express.static(recDir));
