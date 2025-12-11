@@ -11,7 +11,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { exec, spawn } = require('child_process');
+const { exec } = require('child_process');
 
 const { pool } = require('./db'); 
 const { spawn } = require('child_process');
