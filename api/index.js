@@ -451,6 +451,47 @@ app.post('/lidar/control', (req, res) => {
   }
 });
 
+app.get('/record/list', (req, res) => {
+  try {
+    const robotId = req.query.robotId || '';
+    const dir = path.join(__dirname, 'static', 'recordings');
+    if (!fs.existsSync(dir)) return res.json([]);
+    const files = fs.readdirSync(dir)
+      .filter(f => f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.webm'))
+      .map(f => {
+        const st = fs.statSync(path.join(dir, f));
+        return { id: f, filename: f, created_at: st.mtime.toISOString(), size: st.size };
+      })
+      .sort((a,b) => b.created_at.localeCompare(a.created_at));
+    res.json(files);
+  } catch (e) {
+    console.error('record list error', e);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// GET /record/file/:filename  (serve file)
+app.get('/record/file/:filename', (req, res) => {
+  const f = req.params.filename;
+  const p = path.join(__dirname, 'static', 'recordings', f);
+  if (!fs.existsSync(p)) return res.status(404).send('not found');
+  res.sendFile(p);
+});
+
+// DELETE /record/:id
+app.delete('/record/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    const p = path.join(__dirname, 'static', 'recordings', id);
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
+    fs.unlinkSync(p);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('delete record error', e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 app.post('/record/upload', uploadRec.single('file'), (req, res) => {
   // file saved to dest with generated name; move/rename if you want
   if (!req.file) return res.status(400).json({ error: 'no file' });
