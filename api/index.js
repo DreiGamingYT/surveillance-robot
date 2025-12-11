@@ -13,7 +13,8 @@ const path = require('path');
 const fs = require('fs');
 const { exec, spawn } = require('child_process');
 
-const { pool } = require('./db'); // expects a MySQL pool exported from ./db.js
+const { pool } = require('./db'); 
+const { spawn } = require('child_process');
 
 // recordings directory (declare once)
 const recDir = path.join(__dirname, 'static', 'recordings');
@@ -534,27 +535,22 @@ app.use('/static/recordings', express.static(recDir));
 // Endpoint: POST /record/start  body: { robotId, source }
 // Endpoint: POST /record/stop   body: { robotId, id }
 app.post('/record/start', (req, res) => {
-  try {
-    const headersKey = req.headers['x-api-key'] || '';
-    if (LIDAR_API_KEY && headersKey !== LIDAR_API_KEY) return res.status(403).json({ error: 'forbidden' });
+  const { robotId, source } = req.body || {};
+  if (!robotId || !source) return res.status(400).json({ error: 'robotId and source required' });
 
-    const body = req.body || {};
-    const robotId = body.robotId || body.robotid || null;
-    const source = body.source || null; // e.g. http://localhost:8080/?action=stream
-    if (!robotId) return res.status(400).json({ error: 'robotId required' });
+  const id = `rec_${Date.now()}`;
+  const filename = `${id}.mp4`;
+  const dest = path.join(__dirname, 'static', 'recordings', filename);
 
-    const socketId = robotSockets.get(robotId);
-    if (!socketId) return res.status(404).json({ error: 'robot not connected' });
+  // ffmpeg command: record for 30s (remove -t for indefinite)
+  const args = ['-y', '-i', source, '-t', '30', '-c', 'copy', dest];
+  const proc = spawn('ffmpeg', args);
 
-    // create unique id for this recording request
-    const recId = `rec_${Date.now()}_${Math.floor(Math.random()*9999)}`;
-    io.to(socketId).emit('record_control', { action: 'start', id: recId, source: source || null });
-    console.log(`record start emitted -> ${robotId} (socket ${socketId}) id=${recId}`);
-    return res.json({ ok: true, id: recId });
-  } catch (err) {
-    console.error('record/start error', err);
-    return res.status(500).json({ error: 'server error' });
-  }
+  proc.stderr.on('data', (d) => console.log(`[ffmpeg ${id}] ${d.toString()}`));
+  proc.on('close', (code) => console.log(`ffmpeg ${id} exited ${code}`));
+
+  // respond immediately with id
+  return res.json({ ok: true, id, filename });
 });
 
 app.post('/record/stop', (req, res) => {
