@@ -15,17 +15,18 @@ const { exec } = require('child_process');
 
 const { pool } = require('./db'); 
 const { spawn } = require('child_process');
+const recordProcesses = new Map();
 
 // recordings directory (declare once)
-const recDir = path.join(__dirname, 'static', 'recordings');
-if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
-const uploadRec = multer({ dest: recDir });
+const REC_DIR = path.join(__dirname, 'static', 'recordings');
+if (!fs.existsSync(REC_DIR)) fs.mkdirSync(REC_DIR, { recursive: true });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'replace_with_secret';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const LIDAR_API_KEY = process.env.LIDAR_API_KEY || '';
 
 const app = express();
+app.use('/record/file', express.static(REC_DIR));
 app.use(helmet());
 app.use(cors());
 app.use(express.json()); // important: parse JSON bodies
@@ -534,45 +535,44 @@ app.use('/static/recordings', express.static(recDir));
 // We only route start/stop requests from UI to Pi through socket.io
 // Endpoint: POST /record/start  body: { robotId, source }
 // Endpoint: POST /record/stop   body: { robotId, id }
-app.post('/record/start', (req, res) => {
-  const { robotId, source } = req.body || {};
-  if (!robotId || !source) return res.status(400).json({ error: 'robotId and source required' });
-
+app.post('/record/start', async (req, res) => {
+  const { robotId, source } = req.body;
+  // generate id + filename
   const id = `rec_${Date.now()}`;
   const filename = `${id}.mp4`;
-  const dest = path.join(__dirname, 'static', 'recordings', filename);
+  const outPath = path.join(REC_DIR, filename);
 
-  // ffmpeg command: record for 30s (remove -t for indefinite)
-  const args = ['-y', '-i', source, '-t', '30', '-c', 'copy', dest];
-  const proc = spawn('ffmpeg', args);
+  // example ffmpeg command (may need options depending on your stream type)
+  // This tries to copy stream to mp4 container — adapt if your stream is mjpeg
+  const args = ['-y', '-i', source, '-c', 'copy', outPath];
+  const ff = spawn('ffmpeg', args);
 
-  proc.stderr.on('data', (d) => console.log(`[ffmpeg ${id}] ${d.toString()}`));
-  proc.on('close', (code) => console.log(`ffmpeg ${id} exited ${code}`));
+  ff.stderr.on('data', d => console.log('ffmpeg:', d.toString()));
+  ff.on('exit', (code, sig) => console.log('ffmpeg exit', code, sig));
 
-  // respond immediately with id
+  recordProcesses.set(id, { proc: ff, filename });
+
   return res.json({ ok: true, id, filename });
 });
 
-app.post('/record/stop', (req, res) => {
-  try {
-    const headersKey = req.headers['x-api-key'] || '';
-    if (LIDAR_API_KEY && headersKey !== LIDAR_API_KEY) return res.status(403).json({ error: 'forbidden' });
-
-    const body = req.body || {};
-    const robotId = body.robotId || body.robotid || null;
-    const recId = body.id || null;
-    if (!robotId || !recId) return res.status(400).json({ error: 'robotId and id required' });
-
-    const socketId = robotSockets.get(robotId);
-    if (!socketId) return res.status(404).json({ error: 'robot not connected' });
-
-    io.to(socketId).emit('record_control', { action: 'stop', id: recId });
-    console.log(`record stop emitted -> ${robotId} (socket ${socketId}) id=${recId}`);
-    return res.json({ ok: true, id: recId });
-  } catch (err) {
-    console.error('record/stop error', err);
-    return res.status(500).json({ error: 'server error' });
+// In /record/stop handler:
+app.post('/record/stop', async (req, res) => {
+  const { robotId, id } = req.body;
+  const rec = recordProcesses.get(id);
+  if (!rec) {
+    // If process not found, but file exists, still return filename
+    const fallbackFile = `${id}.mp4`;
+    const p = path.join(REC_DIR, fallbackFile);
+    const exists = fs.existsSync(p);
+    return res.json({ ok: true, id, filename: exists ? fallbackFile : null });
   }
+  // gracefully stop ffmpeg
+  try {
+    rec.proc.kill('SIGINT'); // allow ffmpeg to finalize file
+  } catch (e) {}
+  recordProcesses.delete(id);
+
+  return res.json({ ok: true, id, filename: rec.filename });
 });
 
 // endpoint for listing recordings stored on server (if Pi uploads to server /record/upload)
