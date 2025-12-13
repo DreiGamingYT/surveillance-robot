@@ -180,6 +180,11 @@ app.post('/detections', async (req, res) => {
   });
 });
 
+function checkApiKey(req) {
+  const headersKey = req.headers['x-api-key'] || req.headers['X-API-KEY'];
+  return (LIDAR_API_KEY && headersKey === LIDAR_API_KEY);
+}
+
 function signToken(user) {
   return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 }
@@ -442,14 +447,14 @@ app.get('/telemetry/recent', async (req, res) => {
 });
 
 app.post('/record/start', async (req, res) => {
-  const { robotId, source } = req.body;
+  if (!checkApiKey(req)) return res.status(403).json({ error: 'forbidden' });
+  const { robotId, source } = req.body || {};
+  if (!robotId || !source) return res.status(400).json({ error: 'robotId and source required' });
   // generate id + filename
   const id = `rec_${Date.now()}`;
   const filename = `${id}.mp4`;
   const outPath = path.join(REC_DIR, filename);
 
-  // example ffmpeg command (may need options depending on your stream type)
-  // This tries to copy stream to mp4 container — adapt if your stream is mjpeg
   const args = ['-y', '-i', source, '-c', 'copy', outPath];
   const ff = spawn('ffmpeg', args);
 
@@ -463,7 +468,9 @@ app.post('/record/start', async (req, res) => {
 
 // In /record/stop handler:
 app.post('/record/stop', async (req, res) => {
-  const { robotId, id } = req.body;
+  if (!checkApiKey(req)) return res.status(403).json({ error: 'forbidden' });
+  const { robotId, id } = req.body || {};
+  if (!robotId || !id) return res.status(400).json({ error: 'robotId and id required' });
   const rec = recordProcesses.get(id);
   if (!rec) {
     // If process not found, but file exists, still return filename
