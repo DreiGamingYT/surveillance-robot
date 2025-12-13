@@ -31,6 +31,8 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json()); // important: parse JSON bodies
 
+app.use(express.urlencoded({ extended: true }));
+
 // create server + socket.io
 const server = http.createServer(app);
 const { Server } = require('socket.io');
@@ -446,46 +448,130 @@ app.get('/telemetry/recent', async (req, res) => {
   }
 });
 
-app.post('/record/start', async (req, res) => {
-  if (!checkApiKey(req)) return res.status(403).json({ error: 'forbidden' });
-  const { robotId, source } = req.body || {};
-  if (!robotId || !source) return res.status(400).json({ error: 'robotId and source required' });
-  // generate id + filename
-  const id = `rec_${Date.now()}`;
-  const filename = `${id}.mp4`;
-  const outPath = path.join(REC_DIR, filename);
-
-  const args = ['-y', '-i', source, '-c', 'copy', outPath];
-  const ff = spawn('ffmpeg', args);
-
-  ff.stderr.on('data', d => console.log('ffmpeg:', d.toString()));
-  ff.on('exit', (code, sig) => console.log('ffmpeg exit', code, sig));
-
-  recordProcesses.set(id, { proc: ff, filename });
-
-  return res.json({ ok: true, id, filename });
+app.post('/_debug_echo', (req, res) => {
+  console.log('DEBUG /_debug_echo headers=', JSON.stringify(req.headers));
+  console.log('DEBUG /_debug_echo body=', JSON.stringify(req.body));
+  res.json({ ok: true, headers: req.headers, body: req.body });
 });
 
-// In /record/stop handler:
-app.post('/record/stop', async (req, res) => {
-  if (!checkApiKey(req)) return res.status(403).json({ error: 'forbidden' });
-  const { robotId, id } = req.body || {};
-  if (!robotId || !id) return res.status(400).json({ error: 'robotId and id required' });
-  const rec = recordProcesses.get(id);
-  if (!rec) {
-    // If process not found, but file exists, still return filename
-    const fallbackFile = `${id}.mp4`;
-    const p = path.join(REC_DIR, fallbackFile);
-    const exists = fs.existsSync(p);
-    return res.json({ ok: true, id, filename: exists ? fallbackFile : null });
-  }
-  // gracefully stop ffmpeg
+// robust /record/start with logging and fallbacks
+app.post('/record/start', async (req, res) => {
   try {
-    rec.proc.kill('SIGINT'); // allow ffmpeg to finalize file
-  } catch (e) {}
-  recordProcesses.delete(id);
+    console.log('POST /record/start headers=', JSON.stringify(req.headers));
+    console.log('POST /record/start raw body=', JSON.stringify(req.body));
 
-  return res.json({ ok: true, id, filename: rec.filename });
+    if (!checkApiKey(req)) {
+      console.warn('/record/start - missing or invalid API key');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // try to accept multiple shapes: JSON body, urlencoded, or query string
+    let robotId = req.body && (req.body.robotId || req.body.robotid || req.body.id);
+    let source = req.body && (req.body.source || req.body.stream || req.body.url);
+
+    // fallback to query params
+    if (!robotId && req.query && (req.query.robotId || req.query.robotid || req.query.id)) {
+      robotId = req.query.robotId || req.query.robotid || req.query.id;
+    }
+    if (!source && req.query && (req.query.source || req.query.stream || req.query.url)) {
+      source = req.query.source || req.query.stream || req.query.url;
+    }
+
+    // if body is a raw string (some proxies), attempt to parse it
+    if ((!robotId || !source) && typeof req.body === 'string' && req.body.trim().length > 0) {
+      try {
+        const p = JSON.parse(req.body);
+        robotId = robotId || p.robotId || p.robotid || p.id;
+        source = source || p.source || p.stream || p.url;
+        console.log('/record/start parsed raw-string body ->', p);
+      } catch (e) {
+        // ignore parse error
+      }
+    }
+
+    if (!robotId || !source) {
+      console.warn('/record/start missing robotId or source after fallbacks', { robotId, source });
+      return res.status(400).json({ error: 'robotId and source required', received: { robotId, source } });
+    }
+
+    // generate id + filename
+    const id = `rec_${Date.now()}`;
+    const filename = `${id}.mp4`;
+    const outPath = path.join(REC_DIR, filename);
+
+    console.log(`/record/start - spawning ffmpeg for robot=${robotId} source=${source} out=${outPath}`);
+    const args = ['-y', '-i', source, '-c', 'copy', outPath];
+    const ff = spawn('ffmpeg', args);
+
+    ff.stderr.on('data', d => console.log('ffmpeg stderr:', d.toString()));
+    ff.on('exit', (code, sig) => console.log('ffmpeg exit', code, sig));
+
+    recordProcesses.set(id, { proc: ff, filename });
+
+    return res.json({ ok: true, id, filename });
+  } catch (err) {
+    console.error('POST /record/start ERROR', err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// robust /record/stop with logging and fallback
+app.post('/record/stop', async (req, res) => {
+  try {
+    console.log('POST /record/stop headers=', JSON.stringify(req.headers));
+    console.log('POST /record/stop raw body=', JSON.stringify(req.body));
+
+    if (!checkApiKey(req)) {
+      console.warn('/record/stop - missing or invalid API key');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    let robotId = req.body && (req.body.robotId || req.body.robotid || req.body.id);
+    let id = req.body && req.body.id;
+
+    if (!robotId && req.query && (req.query.robotId || req.query.robotid || req.query.id)) {
+      robotId = req.query.robotId || req.query.robotid || req.query.id;
+    }
+    if (!id && req.query && req.query.id) id = req.query.id;
+
+    // raw string fallback
+    if ((!robotId || !id) && typeof req.body === 'string' && req.body.trim().length > 0) {
+      try {
+        const p = JSON.parse(req.body);
+        robotId = robotId || p.robotId || p.robotid || p.id || null;
+        id = id || p.id;
+      } catch (e) {}
+    }
+
+    if (!robotId || !id) {
+      console.warn('/record/stop missing robotId or id after fallbacks', { robotId, id });
+      return res.status(400).json({ error: 'robotId and id required', received: { robotId, id } });
+    }
+
+    const rec = recordProcesses.get(id);
+    if (!rec) {
+      // If process not found, but file exists, still return filename
+      const fallbackFile = `${id}.mp4`;
+      const p = path.join(REC_DIR, fallbackFile);
+      const exists = fs.existsSync(p);
+      console.log(`/record/stop fallback exists=${exists} file=${fallbackFile}`);
+      return res.json({ ok: true, id, filename: exists ? fallbackFile : null });
+    }
+
+    // gracefully stop ffmpeg
+    try {
+      rec.proc.kill('SIGINT'); // allow ffmpeg to finalize file
+      console.log(`/record/stop signaled ffmpeg to stop for id=${id}`);
+    } catch (e) {
+      console.warn('/record/stop kill error', e && e.message ? e.message : e);
+    }
+    recordProcesses.delete(id);
+
+    return res.json({ ok: true, id, filename: rec.filename });
+  } catch (err) {
+    console.error('POST /record/stop ERROR', err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'server error' });
+  }
 });
 
 // start server
