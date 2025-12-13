@@ -39,73 +39,6 @@ const io = new Server(server, {
   transports: ['polling', 'websocket'],
 });
 
-// === Recordings endpoints: list & delete ===
-// GET /record/list?robotId=pi-001
-app.get('/record/list', (req, res) => {
-  try {
-    // optional filter by robotId (some setups include robotId in filename)
-    const robotId = req.query.robotId ? req.query.robotId.toString() : null;
-
-    if (!fs.existsSync(recDir)) return res.json([]);
-
-    const files = fs.readdirSync(recDir)
-      .filter(f => {
-        if (!f) return false;
-        if (robotId) {
-          // allow filenames like rec_<ts>_<random> or include robotId - match both
-          return f.includes(robotId) || f.toLowerCase().includes(robotId.toLowerCase());
-        }
-        return true;
-      })
-      .map(f => {
-        const p = path.join(recDir, f);
-        let stat = null;
-        try { stat = fs.statSync(p); } catch (e) {}
-        return {
-          filename: f,
-          mtime: stat ? stat.mtimeMs : null,
-          size: stat ? stat.size : null
-        };
-      })
-      // sort newest first
-      .sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
-
-    return res.json(files);
-  } catch (err) {
-    console.error('GET /record/list error', err && err.message ? err.message : err);
-    return res.status(500).json({ error: 'server error' });
-  }
-});
-
-// POST /record/delete  { filename: "rec_....mp4" }
-// Requires x-api-key header (if LIDAR_API_KEY set)
-app.post('/record/delete', (req, res) => {
-  try {
-    const headersKey = req.headers['x-api-key'] || req.headers['X-API-KEY'];
-    if (LIDAR_API_KEY && headersKey !== LIDAR_API_KEY) {
-      return res.status(403).json({ error: 'forbidden' });
-    }
-
-    const body = req.body || {};
-    const filename = (body.filename || '').toString();
-    if (!filename) return res.status(400).json({ error: 'filename required' });
-
-    // prevent directory traversal
-    if (filename.includes('..') || path.isAbsolute(filename)) {
-      return res.status(400).json({ error: 'invalid filename' });
-    }
-
-    const p = path.join(recDir, filename);
-    if (!fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
-
-    fs.unlinkSync(p);
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('POST /record/delete error', err && err.message ? err.message : err);
-    return res.status(500).json({ error: 'server error' });
-  }
-});
-
 // In-memory mapping: robotId -> socketId
 // NOTE: ephemeral; will reset on server restart. For multi-instance use a shared store.
 const robotSockets = new Map();
@@ -494,19 +427,6 @@ app.delete('/record/:id', (req, res) => {
   }
 });
 
-// simple purge on server startup (run at process start)
-const PURGE_DAYS = 10;
-function purgeOldRecordings() {
-  const files = fs.readdirSync(recDir);
-  files.forEach(f => {
-    const p = path.join(recDir, f);
-    const stat = fs.statSync(p);
-    const ageDays = (Date.now() - stat.mtimeMs) / (1000*60*60*24);
-    if (ageDays > PURGE_DAYS) fs.unlinkSync(p);
-  });
-}
-purgeOldRecordings();
-
 app.get('/telemetry/recent', async (req, res) => {
   try {
     const robotId = req.query.robotId;
@@ -521,13 +441,6 @@ app.get('/telemetry/recent', async (req, res) => {
   }
 });
 
-// Provide static access to recordings (public read)
-app.use('/static/recordings', express.static(recDir));
-
-// In-memory map for manual recordings started by Pi via socket (Pi will manage actual processes).
-// We only route start/stop requests from UI to Pi through socket.io
-// Endpoint: POST /record/start  body: { robotId, source }
-// Endpoint: POST /record/stop   body: { robotId, id }
 app.post('/record/start', async (req, res) => {
   const { robotId, source } = req.body;
   // generate id + filename
@@ -566,35 +479,6 @@ app.post('/record/stop', async (req, res) => {
   recordProcesses.delete(id);
 
   return res.json({ ok: true, id, filename: rec.filename });
-});
-
-// endpoint for listing recordings stored on server (if Pi uploads to server /record/upload)
-app.get('/recordings', (req, res) => {
-  try {
-    const files = fs.readdirSync(recDir).filter(f => !f.startsWith('.')).map(f => {
-      const stat = fs.statSync(path.join(recDir, f));
-      return { filename: f, url: `${req.protocol}://${req.get('host')}/static/recordings/${f}`, mtime: stat.mtimeMs, size: stat.size };
-    }).sort((a,b) => b.mtime - a.mtime);
-    return res.json(files);
-  } catch (err) {
-    console.error('recordings list error', err);
-    return res.status(500).json({ error: 'server error' });
-  }
-});
-
-// delete a recording by filename
-app.delete('/recordings/:filename', (req, res) => {
-  try {
-    const fname = req.params.filename;
-    if (!fname) return res.status(400).json({ error: 'filename required' });
-    const p = path.join(recDir, fname);
-    if (!fs.existsSync(p)) return res.status(404).json({ error: 'not found' });
-    fs.unlinkSync(p);
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error('recording delete error', err);
-    return res.status(500).json({ error: 'server error' });
-  }
 });
 
 // start server
