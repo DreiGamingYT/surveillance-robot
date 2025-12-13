@@ -494,13 +494,6 @@ app.delete('/record/:id', (req, res) => {
   }
 });
 
-app.post('/record/upload', uploadRec.single('file'), (req, res) => {
-  // file saved to dest with generated name; move/rename if you want
-  if (!req.file) return res.status(400).json({ error: 'no file' });
-  // optionally rename/move
-  res.json({ ok: true, filename: req.file.filename });
-});
-
 // simple purge on server startup (run at process start)
 const PURGE_DAYS = 10;
 function purgeOldRecordings() {
